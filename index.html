@@ -83,9 +83,13 @@ const CATS=['Обслуживание','Ремонт','Страховка','На
 const FUELS=['А-95','А-98','А-100','Газ'];
 const fuelOf=x=>x.fuel||'А-95';
 const TABS=[['home','⌂','Главная'],['fills','⛽','Заправки'],['costs','₴','Расходы'],['stats','▥','Статистика'],['set','⚙','Настройки']];
-let tab='home',tok=null,D={};
+// Можно вписать свой Client ID сюда один раз: он подхватится на всех устройствах (Client ID не секретный).
+const DEFAULT_CID='208257579723-2ntrknlkvkfmamfrlo7tq1rgidm1710t.apps.googleusercontent.com';
+let tab='home',tok=null,D={},tokExp=0,syncing=false,sess=false,lastErr='',pt=null;
+const alive=()=>tok&&Date.now()<tokExp;
 try{D=JSON.parse(localStorage.getItem('al'))||{}}catch(e){}
 D.set=D.set||{cur:'₴',cid:''};
+if(!D.set.cid)D.set.cid=DEFAULT_CID;
 if(!D.cars){D.cars=[{id:uid(),name:'Моя машина',u:Date.now(),fills:D.fills||[],costs:D.costs||[]}];delete D.fills;delete D.costs}
 const act=a=>a.filter(x=>!x.del);
 function ensure(){
@@ -94,7 +98,8 @@ function ensure(){
 }
 ensure();
 const C=()=>D.cars.find(c=>c.id==D.active);
-const save=()=>{ensure();try{localStorage.setItem('al',JSON.stringify(D))}catch(e){}render()};
+const persist=()=>{try{localStorage.setItem('al',JSON.stringify(D))}catch(e){}};
+const save=()=>{ensure();persist();render();clearTimeout(pt);if(alive())pt=setTimeout(()=>sync(true),3000)};
 const n2=n=>(Math.round(n*100)/100).toLocaleString('ru-RU');
 const money=n=>n2(n)+' '+D.set.cur;
 const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -119,6 +124,10 @@ function calc(){
   return{f,cs,c,avgP,avgG,avg:avgP!=null?avgP:avgG,mainG:avgP==null&&avgG!=null,fuel,oth,dist,last:lf?c[lf.id]:null,liters:f.reduce((s,x)=>s+x.liters,0),by};
 }
 
+function banner(){
+  if(!D.set.cid||D.set.auto===false||sess)return '';
+  return `<div class="card" style="display:flex;gap:12px;align-items:center"><div class="sub" style="flex:1">${lastErr?'Ошибка: '+esc(lastErr):'Данные с Google Диска ещё не загружены в этом сеансе.'}</div><button class="btn m" data-a="sync">Обновить</button></div>`;
+}
 function render(){
   $('#ttl').textContent=TABS.find(t=>t[0]==tab)[2];
   const cars=act(D.cars);
@@ -151,9 +160,10 @@ function render(){
   }
   if(tab=='stats')h=stats(s);
   if(tab=='set')h=settings();
-  $('#main').innerHTML=h;
+  $('#main').innerHTML=banner()+h;
   $('#main').onclick=e=>{const r=e.target.closest('.row[data-k]');if(r)return form(r.dataset.k,r.dataset.id);const a=e.target.closest('[data-a]');if(a)actions[a.dataset.a](a.dataset.id)};
   const cid=$('#cid');if(cid)cid.onchange=()=>{D.set.cid=cid.value.trim();save()};
+  const au=$('#auto');if(au)au.onchange=()=>{D.set.auto=au.checked;save()};
   const cur=$('#cur');if(cur)cur.onchange=()=>{D.set.cur=cur.value||'₴';save()};
 }
 
@@ -179,8 +189,10 @@ function settings(){
   <div class="btns"><button class="btn s" data-a="addcar">＋ Добавить машину</button></div></div>
   <div class="card"><label>Валюта</label><input id="cur" value="${esc(D.set.cur)}" maxlength="4">
   <label>Google OAuth Client ID (для синхронизации)</label><input id="cid" value="${esc(D.set.cid)}" placeholder="xxxx.apps.googleusercontent.com">
+  <div class="row" style="cursor:default;margin-top:8px"><div><b>Аккаунт Google</b><div class="sub">${esc(D.set.email||'будет запомнен после первого входа')}</div></div><button class="btn s m" data-a="acc">Сменить</button></div>
+  <label class="chk"><input type="checkbox" id="auto" ${D.set.auto===false?'':'checked'}><span>Предлагать обновить данные с Диска при открытии</span></label>
   <div class="btns"><button class="btn" data-a="sync">Синхронизировать с Google Диском</button></div>
-  <div class="msg" id="smsg">${D.synced?'Последняя синхронизация: '+new Date(D.synced).toLocaleString('ru-RU'):'Папки на Диске: АвтоЖурнал / название машины / файл синхронизации.'}</div></div>
+  <div class="msg" id="smsg">${lastErr?'Ошибка: '+esc(lastErr):D.synced?'Последняя синхронизация: '+new Date(D.synced).toLocaleString('ru-RU'):'Папки на Диске: АвтоЖурнал / название машины / файл синхронизации.'}</div></div>
   <div class="card"><div class="btns" style="margin:0"><button class="btn s" data-a="exp">Экспорт в файл</button><button class="btn s" data-a="imp">Импорт из файла</button></div></div>`;
 }
 
@@ -233,17 +245,25 @@ const ROOT='АвтоЖурнал',FN='avtozhurnal-sync.json',FOLDER='application
 function auth(){return new Promise((ok,fail)=>{
   if(!D.set.cid)return fail('Укажите Client ID в настройках');
   if(!window.google||!google.accounts)return fail('Скрипт Google не загрузился: нужен интернет и страница по https://');
-  google.accounts.oauth2.initTokenClient({client_id:D.set.cid,scope:'https://www.googleapis.com/auth/drive.file',
-    callback:r=>r.access_token?(tok=r.access_token,ok()):fail(r.error||'Доступ не выдан'),error_callback:e=>fail(e.type||'Окно входа закрыто')}).requestAccessToken();
+  const cfg={client_id:D.set.cid,scope:'https://www.googleapis.com/auth/drive.file',prompt:D.set.pick?'select_account':'',
+    callback:r=>{if(!r.access_token)return fail(r.error||'Доступ не выдан');tok=r.access_token;tokExp=Date.now()+(Number(r.expires_in||3600)-60)*1000;D.set.pick=false;ok()},
+    error_callback:e=>fail(e.type=='popup_failed_to_open'?'Браузер заблокировал окно входа, нажмите «Обновить» ещё раз':(e.type||'Окно входа закрыто'))};
+  if(D.set.email&&!D.set.pick)cfg.hint=D.set.email;
+  google.accounts.oauth2.initTokenClient(cfg).requestAccessToken();
 })}
 async function api(url,o={}){o.headers=Object.assign({Authorization:'Bearer '+tok},o.headers);const r=await fetch(url,o);if(!r.ok)throw new Error('Ошибка Google API: '+r.status);return r}
 const J={'Content-Type':'application/json'};
 const gq=async q=>(await(await api(G+'?pageSize=100&fields=files(id,name)&q='+encodeURIComponent(q))).json()).files;
 const mk=async(name,parent,mime)=>(await(await api(G,{method:'POST',headers:J,body:JSON.stringify({name,mimeType:mime,parents:parent?[parent]:undefined})})).json());
-async function sync(){
+async function sync(quiet){
+  if(syncing)return;
+  if(!alive()&&quiet===true)return; // фоновая синхронизация только при действующем входе
+  syncing=true;
   const say=t=>{const m=$('#smsg');if(m)m.textContent=t};
   try{
-    say('Вход в Google…');await auth();say('Синхронизация…');
+    if(!alive()){say('Вход в Google…');await auth()}
+    say('Синхронизация…');
+    if(!D.set.email){try{D.set.email=(await(await api('https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)')).json()).user.emailAddress}catch(e){}}
     const root=(await gq(`name='${ROOT}' and mimeType='${FOLDER}' and trashed=false`))[0]||await mk(ROOT,null,FOLDER);
     const subs=await gq(`'${root.id}' in parents and mimeType='${FOLDER}' and trashed=false`),files={};
     for(const s of subs){
@@ -251,6 +271,9 @@ async function sync(){
       if(!f)continue;files[s.id]=f.id;
       mergeCar(await(await api(`${G}/${f.id}?alt=media`)).json(),s.id);
     }
+    // пустая машина «по умолчанию», созданная на этом устройстве, не нужна, если на Диске уже есть машины
+    if(Object.keys(files).length)D.cars=D.cars.filter(c=>!(!c.fid&&c.name=='Моя машина'&&!c.fills.length&&!c.costs.length));
+    ensure();
     for(const c of D.cars){
       let sub=subs.find(s=>s.id==c.fid);
       if(!sub){if(c.del)continue;sub=await mk(c.name,root.id,FOLDER);c.fid=sub.id}
@@ -259,12 +282,15 @@ async function sync(){
       await api(`https://www.googleapis.com/upload/drive/v3/files/${fid}?uploadType=media`,{method:'PATCH',headers:J,
         body:JSON.stringify({car:{id:c.id,name:c.name,u:c.u,del:c.del},fills:c.fills,costs:c.costs})});
     }
-    D.synced=Date.now();save();say('Готово: данные объединены и сохранены на Диске');
-  }catch(e){say('Ошибка: '+(e.message||e))}
+    sess=true;lastErr='';D.synced=Date.now();persist();render();
+  }catch(e){lastErr=e.message||String(e);render()}
+  finally{syncing=false}
 }
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&alive())sync(true)});
 
 const actions={
-  sync,
+  sync:()=>sync(),
+  acc(){D.set.email='';D.set.pick=true;tok=null;save();sync()},
   addcar(){const n=(prompt('Название машины (например, «Skoda Octavia»)')||'').trim();if(!n)return;const c={id:uid(),name:n,u:Date.now(),fills:[],costs:[]};D.cars.push(c);D.active=c.id;save()},
   ren(id){const c=D.cars.find(x=>x.id==id),n=(prompt('Новое название',c.name)||'').trim();if(n){c.name=n;c.u=Date.now();save()}},
   delcar(id){const c=D.cars.find(x=>x.id==id);if(confirm(`Удалить «${c.name}» со всеми записями?`)){c.del=true;c.u=Date.now();save()}},
