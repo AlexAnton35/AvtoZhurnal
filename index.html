@@ -26,6 +26,7 @@ main{flex:1;overflow-y:auto;padding:12px 12px 90px}
 .card{background:var(--card);border-radius:12px;padding:14px;margin-bottom:10px;border:1px solid var(--ln)}
 .hero{background:var(--ac);color:var(--on);border:0}
 .hero b{font-size:40px;font-weight:700;letter-spacing:-.02em}.hero span{font-size:15px;opacity:.9}
+.hr{display:flex;gap:30px;flex-wrap:wrap;margin-top:2px}.hl{font-size:14px;opacity:.9;margin-top:-4px}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .grid .card{margin:0}.k{color:var(--mu);font-size:13px}.v{font-size:21px;font-weight:650}
 .row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:12px 4px;border-bottom:1px solid var(--ln);cursor:pointer}
@@ -101,19 +102,20 @@ const today=()=>new Date().toISOString().slice(0,10);
 const dfmt=d=>new Date(d).toLocaleDateString('ru-RU',{day:'numeric',month:'short',year:'numeric'});
 
 function calc(){
-  const car=C(),f=act(car.fills).sort((a,b)=>a.odo-b.odo),cs=act(car.costs),c={},G={p:{l:0,d:0},g:{l:0,d:0}};
+  const car=C(),f=act(car.fills).sort((a,b)=>a.odo-b.odo),cs=act(car.costs),c={},by={},G={p:{l:0,d:0},g:{l:0,d:0}};
   // расход считается отдельно для бензина (А-95/98/100) и для газа
-  ['p','g'].forEach(g=>{let base=null,acc=0;
+  ['p','g'].forEach(g=>{let prev=null;
     f.filter(x=>(fuelOf(x)=='Газ'?'g':'p')==g).forEach(x=>{
-      if(base!==null){acc+=x.liters;if(x.full){const d=x.odo-base;if(d>0){c[x.id]=acc/d*100;G[g].l+=acc;G[g].d+=d}acc=0;base=x.odo}}
-      else if(x.full){base=x.odo;acc=0}
+      // литры этой заправки приходятся на пробег с прошлой заправки того же типа топлива
+      if(prev!==null){const d=x.odo-prev.odo;if(d>0){c[x.id]=x.liters/d*100;G[g].l+=x.liters;G[g].d+=d;const k=fuelOf(x),b=by[k]=by[k]||{l:0,t:0};b.cl=(b.cl||0)+x.liters;b.cd=(b.cd||0)+d}}
+      prev=x;
     })});
   const avgP=G.p.d?G.p.l/G.p.d*100:null,avgG=G.g.d?G.g.l/G.g.d*100:null;
   const fuel=f.reduce((s,x)=>s+x.total,0),oth=cs.reduce((s,x)=>s+x.sum,0);
   const odos=[...f.map(x=>x.odo),...cs.map(x=>x.odo||0)].filter(Boolean);
   const dist=odos.length?Math.max(...odos)-Math.min(...odos):0;
   const lf=[...f].reverse().find(x=>c[x.id]!=null);
-  const by={};f.forEach(x=>{const k=fuelOf(x);(by[k]=by[k]||{l:0,t:0}).l+=x.liters;by[k].t+=x.total});
+  f.forEach(x=>{const k=fuelOf(x);(by[k]=by[k]||{l:0,t:0}).l+=x.liters;by[k].t+=x.total});
   return{f,cs,c,avgP,avgG,avg:avgP!=null?avgP:avgG,mainG:avgP==null&&avgG!=null,fuel,oth,dist,last:lf?c[lf.id]:null,liters:f.reduce((s,x)=>s+x.liters,0),by};
 }
 
@@ -128,18 +130,20 @@ function render(){
   $('#fab').onclick=()=>form(tab=='costs'?'c':'f');
   const s=calc();let h='';
   if(tab=='home'){
-    h=`<div class="card hero"><span>Средний расход${s.avgP!=null&&s.avgG!=null?' на бензине':s.mainG?' на газе':''} · ${esc(C().name)}</span><br><b>${s.avg?n2(s.avg):'—'}</b> <span>л/100 км</span></div>
+    const hb=(v,l)=>`<div><b>${n2(v)}</b><div class="hl">${l}, л/100 км</div></div>`;
+    const hv=[s.avgP!=null?hb(s.avgP,'Бензин'):'',s.avgG!=null?hb(s.avgG,'Газ'):''].join('')||'<div><b>—</b><div class="hl">л/100 км</div></div>';
+    h=`<div class="card hero"><span>Средний расход · ${esc(C().name)}</span><div class="hr">${hv}</div></div>
     <div class="grid">
     <div class="card"><div class="k">Последний расход</div><div class="v">${s.last?n2(s.last)+' л/100':'—'}</div></div>
     <div class="card"><div class="k">Пробег (по записям)</div><div class="v">${n2(s.dist)} км</div></div>
     <div class="card"><div class="k">Топливо</div><div class="v">${money(s.fuel)}</div></div>
     <div class="card"><div class="k">Прочие расходы</div><div class="v">${money(s.oth)}</div></div>
     <div class="card"><div class="k">Всего потрачено</div><div class="v">${money(s.fuel+s.oth)}</div></div>
-    <div class="card"><div class="k">Стоимость 1 км</div><div class="v">${s.dist?money((s.fuel+s.oth)/s.dist):'—'}</div></div>${s.avgP!=null&&s.avgG!=null?`<div class="card"><div class="k">Расход на газе</div><div class="v">${n2(s.avgG)} л/100</div></div>`:''}</div>${s.avgP!=null&&s.avgG!=null?'<div class="msg" style="margin:0 4px 10px">Если машина ездит и на бензине, и на газе, расход по каждому виду приблизительный: пробег считается общий.</div>':''}`;
-    if(!s.f.length)h+=`<div class="empty">Добавьте первую заправку кнопкой «+».<br>Для расчёта расхода нужны две заправки «до полного бака».</div>`;
+    <div class="card"><div class="k">Стоимость 1 км</div><div class="v">${s.dist?money((s.fuel+s.oth)/s.dist):'—'}</div></div></div>${s.avgP!=null&&s.avgG!=null?'<div class="msg" style="margin:0 4px 10px">Расход считается по литрам и пробегу между заправками, объём бака не нужен: чем регулярнее заправки, тем точнее. Весь бензин (А-95, А-98, А-100) считается вместе. Если машина ездит и на бензине, и на газе, расход по каждому виду приблизительный: пробег считается общий.</div>':''}`;
+    if(!s.f.length)h+=`<div class="empty">Добавьте первую заправку кнопкой «+».<br>Для расчёта расхода нужны минимум две заправки одним видом топлива, объём бака знать не нужно.</div>`;
   }
   if(tab=='fills'){
-    h=s.f.length?'<div class="card">'+[...s.f].reverse().map(x=>`<div class="row" data-k="f" data-id="${x.id}"><div><b>${dfmt(x.date)}</b><div class="sub"><b>${fuelOf(x)}</b> · ${n2(x.liters)} л × ${n2(x.price)} · ${n2(x.odo)} км${x.full?'':' · частичная'}</div></div><div class="r"><b>${money(x.total)}</b><div>${s.c[x.id]?`<span class="pill">${n2(s.c[x.id])} л/100</span>`:''}</div></div></div>`).join('')+'</div>':'<div class="empty">Заправок пока нет</div>';
+    h=s.f.length?'<div class="card">'+[...s.f].reverse().map(x=>`<div class="row" data-k="f" data-id="${x.id}"><div><b>${dfmt(x.date)}</b><div class="sub"><b>${fuelOf(x)}</b> · ${n2(x.liters)} л × ${n2(x.price)} · ${n2(x.odo)} км</div></div><div class="r"><b>${money(x.total)}</b><div>${s.c[x.id]?`<span class="pill">${n2(s.c[x.id])} л/100</span>`:''}</div></div></div>`).join('')+'</div>':'<div class="empty">Заправок пока нет</div>';
   }
   if(tab=='costs'){
     const l=[...s.cs].sort((a,b)=>b.date.localeCompare(a.date));
@@ -166,7 +170,7 @@ function stats(s){
   return `<div class="card"><div class="k">Расходы по месяцам (зелёный — топливо, жёлтый — прочее)</div><svg viewBox="0 0 ${ks.length*100+50} 175" style="width:100%;max-height:300px">${bars}</svg></div>
   <div class="card"><div class="k">Прочие расходы по категориям</div>${Object.keys(bc).length?Object.entries(bc).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<div class="row" style="cursor:default"><span>${esc(k)}</span><b>${money(v)}</b></div>`).join(''):'<div class="sub">Нет данных</div>'}</div>
   <div class="card"><div class="k">Заправлено всего</div><div class="v">${n2(s.liters)} л</div></div>
-  <div class="card"><div class="k">По видам топлива</div>${FUELS.filter(k=>s.by[k]).map(k=>`<div class="row" style="cursor:default"><div><b>${k}</b><div class="sub">${n2(s.by[k].l)} л · средняя цена ${n2(s.by[k].t/s.by[k].l)} за л</div></div><b>${money(s.by[k].t)}</b></div>`).join('')}</div>`;
+  <div class="card"><div class="k">По видам топлива</div>${FUELS.filter(k=>s.by[k]).map(k=>`<div class="row" style="cursor:default"><div><b>${k}</b><div class="sub">${n2(s.by[k].l)} л · средняя цена ${n2(s.by[k].t/s.by[k].l)} за л${s.by[k].cd?' · <b>'+n2(s.by[k].cl/s.by[k].cd*100)+' л/100 км</b>':''}</div></div><b>${money(s.by[k].t)}</b></div>`).join('')}</div>`;
 }
 
 function settings(){
@@ -185,7 +189,7 @@ function form(kind,id){
   const fd=x.fuel||act(car.fills).sort((a,b)=>a.date.localeCompare(b.date)).slice(-1).map(fuelOf)[0]||'А-95';
   const lo=Math.max(0,...act(car.fills).map(i=>i.odo),...act(car.costs).map(i=>i.odo||0));
   let b=`<label>Дата</label><input type="date" id="f_date" value="${x.date||today()}"><label>Пробег, км</label><input type="number" inputmode="decimal" id="f_odo" value="${x.odo||(lo||'')}">`;
-  if(kind=='f')b+=`<label>Вид топлива</label><select id="f_fuel">${FUELS.map(k=>`<option ${k==fd?'selected':''}>${k}</option>`).join('')}</select><label>Литры</label><input type="number" inputmode="decimal" step="any" id="f_l" value="${x.liters||''}"><label>Цена за литр</label><input type="number" inputmode="decimal" step="any" id="f_p" value="${x.price||''}"><label>Сумма (посчитается сама, если пусто)</label><input type="number" inputmode="decimal" step="any" id="f_t" value="${x.total||''}"><div class="chk"><input type="checkbox" id="f_full" ${x.full===false?'':'checked'}><span>Заправлен до полного бака</span></div>`;
+  if(kind=='f')b+=`<label>Вид топлива</label><select id="f_fuel">${FUELS.map(k=>`<option ${k==fd?'selected':''}>${k}</option>`).join('')}</select><label>Литры</label><input type="number" inputmode="decimal" step="any" id="f_l" value="${x.liters||''}"><label>Цена за литр</label><input type="number" inputmode="decimal" step="any" id="f_p" value="${x.price||''}"><label>Сумма (посчитается сама, если пусто)</label><input type="number" inputmode="decimal" step="any" id="f_t" value="${x.total||''}">`;
   else b+=`<label>Категория</label><select id="f_cat">${CATS.map(c=>`<option ${x.cat==c?'selected':''}>${c}</option>`).join('')}</select><label>Описание</label><input id="f_title" value="${esc(x.title)}" placeholder="Замена масла"><label>Сумма</label><input type="number" inputmode="decimal" step="any" id="f_s" value="${x.sum||''}">`;
   $('#md').innerHTML=`<div class="modal"><div class="sheet"><h3>${id?'Изменить':'Добавить'}: ${kind=='f'?'заправка':'расход'}</h3>${b}<div class="msg" id="err" style="color:var(--dg)"></div><div class="btns">${id?'<button class="btn d" id="del">Удалить</button>':''}<button class="btn s" id="no">Отмена</button><button class="btn" id="ok">Сохранить</button></div></div></div>`;
   const close=()=>$('#md').innerHTML='';
@@ -196,7 +200,7 @@ function form(kind,id){
     const v=i=>parseFloat($(i).value.replace(',','.'))||0,o={id:x.id||uid(),date:$('#f_date').value,odo:v('#f_odo'),u:Date.now()};
     if(!o.date)return $('#err').textContent='Укажите дату';
     if(kind=='f'){
-      o.fuel=$('#f_fuel').value;o.liters=v('#f_l');o.price=v('#f_p');o.total=v('#f_t');o.full=$('#f_full').checked;
+      o.fuel=$('#f_fuel').value;o.liters=v('#f_l');o.price=v('#f_p');o.total=v('#f_t');
       if(!o.liters)return $('#err').textContent='Укажите количество литров';
       if(!o.odo)return $('#err').textContent='Укажите пробег';
       if(!o.total&&o.price)o.total=Math.round(o.liters*o.price*100)/100;
