@@ -26,6 +26,7 @@ main{flex:1;overflow-y:auto;padding:12px 12px 90px}
 .card{background:var(--card);border-radius:12px;padding:14px;margin-bottom:10px;border:1px solid var(--ln)}
 .hero{background:var(--ac);color:var(--on);border:0}
 .hero b{font-size:40px;font-weight:700;letter-spacing:-.02em}.hero span{font-size:15px;opacity:.9}
+.toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);background:var(--tx);color:var(--bg);padding:10px 18px;border-radius:22px;font-size:14px;z-index:20;max-width:90%;text-align:center}
 .hr{display:flex;gap:30px;flex-wrap:wrap;margin-top:2px}.hl{font-size:14px;opacity:.9;margin-top:-4px}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .grid .card{margin:0}.k{color:var(--mu);font-size:13px}.v{font-size:21px;font-weight:650}
@@ -103,14 +104,14 @@ const save=()=>{ensure();persist();render();clearTimeout(pt);if(alive())pt=setTi
 const n2=n=>(Math.round(n*100)/100).toLocaleString('ru-RU');
 const money=n=>n2(n)+' '+D.set.cur;
 const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const today=()=>new Date().toISOString().slice(0,10);
+const today=()=>{const d=new Date();return new Date(d-d.getTimezoneOffset()*60000).toISOString().slice(0,10)};
 const dfmt=d=>new Date(d).toLocaleDateString('ru-RU',{day:'numeric',month:'short',year:'numeric'});
 
 function calc(){
   const car=C(),f=act(car.fills).sort((a,b)=>a.odo-b.odo),cs=act(car.costs),c={},by={},G={p:{l:0,d:0},g:{l:0,d:0}};
   // расход считается отдельно для бензина (А-95/98/100) и для газа
   ['p','g'].forEach(g=>{let prev=null;
-    f.filter(x=>(fuelOf(x)=='Газ'?'g':'p')==g).forEach(x=>{
+    f.filter(x=>x.odo>0&&(fuelOf(x)=='Газ'?'g':'p')==g).forEach(x=>{
       // литры этой заправки приходятся на пробег с прошлой заправки того же типа топлива
       if(prev!==null){const d=x.odo-prev.odo;if(d>0){c[x.id]=x.liters/d*100;G[g].l+=x.liters;G[g].d+=d;const k=fuelOf(x),b=by[k]=by[k]||{l:0,t:0};b.cl=(b.cl||0)+x.liters;b.cd=(b.cd||0)+d}}
       prev=x;
@@ -124,6 +125,7 @@ function calc(){
   return{f,cs,c,avgP,avgG,avg:avgP!=null?avgP:avgG,mainG:avgP==null&&avgG!=null,fuel,oth,dist,last:lf?c[lf.id]:null,liters:f.reduce((s,x)=>s+x.liters,0),by};
 }
 
+function toast(t){const e=document.createElement('div');e.className='toast';e.textContent=t;document.body.appendChild(e);setTimeout(()=>e.remove(),2500)}
 function banner(){
   if(!D.set.cid||D.set.auto===false||sess)return '';
   return `<div class="card" style="display:flex;gap:12px;align-items:center"><div class="sub" style="flex:1">${lastErr?'Ошибка: '+esc(lastErr):'Данные с Google Диска ещё не загружены в этом сеансе.'}</div><button class="btn m" data-a="sync">Обновить</button></div>`;
@@ -152,7 +154,7 @@ function render(){
     if(!s.f.length)h+=`<div class="empty">Добавьте первую заправку кнопкой «+».<br>Для расчёта расхода нужны минимум две заправки одним видом топлива, объём бака знать не нужно.</div>`;
   }
   if(tab=='fills'){
-    h=s.f.length?'<div class="card">'+[...s.f].reverse().map(x=>`<div class="row" data-k="f" data-id="${x.id}"><div><b>${dfmt(x.date)}</b><div class="sub"><b>${fuelOf(x)}</b> · ${n2(x.liters)} л × ${n2(x.price)} · ${n2(x.odo)} км</div></div><div class="r"><b>${money(x.total)}</b><div>${s.c[x.id]?`<span class="pill">${n2(s.c[x.id])} л/100</span>`:''}</div></div></div>`).join('')+'</div>':'<div class="empty">Заправок пока нет</div>';
+    h=s.f.length?'<div class="card">'+[...s.f].sort((a,b)=>b.date.localeCompare(a.date)||b.odo-a.odo).map(x=>`<div class="row" data-k="f" data-id="${x.id}"><div><b>${dfmt(x.date)}</b><div class="sub"><b>${fuelOf(x)}</b> · ${n2(x.liters)} л × ${n2(x.price)}${x.odo?' · '+n2(x.odo)+' км':''}</div></div><div class="r"><b>${money(x.total)}</b><div>${s.c[x.id]?`<span class="pill">${n2(s.c[x.id])} л/100</span>`:''}</div></div></div>`).join('')+'</div>':'<div class="empty">Заправок пока нет</div>';
   }
   if(tab=='costs'){
     const l=[...s.cs].sort((a,b)=>b.date.localeCompare(a.date));
@@ -197,32 +199,34 @@ function settings(){
 }
 
 function form(kind,id){
-  const car=C(),arr=kind=='f'?car.fills:car.costs,x=arr.find(i=>i.id==id)||{};
+  const cid=D.active,car=C(),fresh=()=>{const cr=D.cars.find(c=>c.id==cid&&!c.del)||C();return kind=='f'?cr.fills:cr.costs},x=fresh().find(i=>i.id==id)||{};
   const fd=x.fuel||act(car.fills).sort((a,b)=>a.date.localeCompare(b.date)).slice(-1).map(fuelOf)[0]||'А-95';
-  const lo=Math.max(0,...act(car.fills).map(i=>i.odo),...act(car.costs).map(i=>i.odo||0));
-  let b=`<label>Дата</label><input type="date" id="f_date" value="${x.date||today()}"><label>Пробег, км</label><input type="number" inputmode="decimal" id="f_odo" value="${x.odo||(lo||'')}">`;
+  const odoAt=d=>Math.max(0,...act(car.fills).filter(i=>i.date<=d).map(i=>i.odo),...act(car.costs).filter(i=>i.date<=d).map(i=>i.odo||0))||'';
+  let b=`<label>Дата</label><input type="date" id="f_date" value="${x.date||today()}"><label>Пробег, км (необязательно, нужен для расчёта расхода)</label><input type="number" inputmode="decimal" id="f_odo" value="${x.odo||odoAt(x.date||today())}">`;
   if(kind=='f')b+=`<label>Вид топлива</label><select id="f_fuel">${FUELS.map(k=>`<option ${k==fd?'selected':''}>${k}</option>`).join('')}</select><label>Литры</label><input type="number" inputmode="decimal" step="any" id="f_l" value="${x.liters||''}"><label>Цена за литр</label><input type="number" inputmode="decimal" step="any" id="f_p" value="${x.price||''}"><label>Сумма (посчитается сама, если пусто)</label><input type="number" inputmode="decimal" step="any" id="f_t" value="${x.total||''}">`;
   else b+=`<label>Категория</label><select id="f_cat">${CATS.map(c=>`<option ${x.cat==c?'selected':''}>${c}</option>`).join('')}</select><label>Описание</label><input id="f_title" value="${esc(x.title)}" placeholder="Замена масла"><label>Сумма</label><input type="number" inputmode="decimal" step="any" id="f_s" value="${x.sum||''}">`;
   $('#md').innerHTML=`<div class="modal"><div class="sheet"><h3>${id?'Изменить':'Добавить'}: ${kind=='f'?'заправка':'расход'}</h3>${b}<div class="msg" id="err" style="color:var(--dg)"></div><div class="btns">${id?'<button class="btn d" id="del">Удалить</button>':''}<button class="btn s" id="no">Отмена</button><button class="btn" id="ok">Сохранить</button></div></div></div>`;
   const close=()=>$('#md').innerHTML='';
+  const er=(m,f)=>{const e=$('#err');e.textContent=m;e.scrollIntoView({block:'center'});if(f&&$(f))$(f).focus()};
+  let touched=false;$('#f_odo').oninput=()=>{touched=true};
+  $('#f_date').onchange=()=>{if(!touched&&!id)$('#f_odo').value=odoAt($('#f_date').value)};
   $('#no').onclick=close;
   $('.modal').onclick=e=>{if(e.target.className=='modal')close()};
-  if($('#del'))$('#del').onclick=()=>{if(confirm('Удалить запись?')){x.del=true;x.u=Date.now();close();save()}};
+  if($('#del'))$('#del').onclick=()=>{if(confirm('Удалить запись?')){const t=fresh().find(i=>i.id==id)||x;t.del=true;t.u=Date.now();close();save()}};
   $('#ok').onclick=()=>{
     const v=i=>parseFloat($(i).value.replace(',','.'))||0,o={id:x.id||uid(),date:$('#f_date').value,odo:v('#f_odo'),u:Date.now()};
-    if(!o.date)return $('#err').textContent='Укажите дату';
+    if(!o.date)return er('Укажите дату','#f_date');
     if(kind=='f'){
       o.fuel=$('#f_fuel').value;o.liters=v('#f_l');o.price=v('#f_p');o.total=v('#f_t');
-      if(!o.liters)return $('#err').textContent='Укажите количество литров';
-      if(!o.odo)return $('#err').textContent='Укажите пробег';
+      if(!o.liters)return er('Укажите количество литров','#f_l');
       if(!o.total&&o.price)o.total=Math.round(o.liters*o.price*100)/100;
       if(!o.price&&o.total)o.price=Math.round(o.total/o.liters*100)/100;
-      if(!o.total)return $('#err').textContent='Укажите цену или сумму';
+      if(!o.total)return er('Укажите цену за литр или сумму','#f_p');
     }else{
       o.cat=$('#f_cat').value;o.title=$('#f_title').value.trim();o.sum=v('#f_s');
-      if(!o.sum)return $('#err').textContent='Укажите сумму';
+      if(!o.sum)return er('Укажите сумму','#f_s');
     }
-    const i=arr.findIndex(a=>a.id==o.id);i>=0?arr[i]=o:arr.push(o);close();save();
+    const arr=fresh(),i=arr.findIndex(a=>a.id==o.id);i>=0?arr[i]=o:arr.push(o);close();save();toast((kind=='f'?'Заправка':'Расход')+' сохранён(а): '+dfmt(o.date));
   };
 }
 
@@ -230,7 +234,7 @@ function form(kind,id){
 function mergeLists(c,rem){['fills','costs'].forEach(k=>{
   const m=new Map(c[k].map(x=>[x.id,x]));
   (rem[k]||[]).forEach(x=>{const l=m.get(x.id);if(!l||(x.u||0)>(l.u||0))m.set(x.id,x)});
-  c[k]=[...m.values()];
+  c[k].splice(0,c[k].length,...m.values());
 })}
 function mergeCar(rem,fid){
   const r=rem.car;let c=D.cars.find(x=>x.id==r.id);
